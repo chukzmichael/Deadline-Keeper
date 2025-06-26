@@ -16,6 +16,8 @@
 (define-constant ERR-TASK-CANCELLED (err u110))
 (define-constant ERR-ALREADY-CLAIMED (err u111))
 (define-constant ERR-NO-PENALTY (err u112))
+(define-constant ERR-INVALID-PRINCIPAL (err u113))
+(define-constant ERR-INVALID-STRING (err u114))
 
 ;; Data Variables
 (define-data-var task-counter uint u0)
@@ -126,6 +128,15 @@
     )
 )
 
+;; Private function to validate arbiter
+(define-private (validate-arbiter (arbiter (optional principal)) (creator principal) (assignee principal))
+    (match arbiter
+        arb (if (and (not (is-eq arb creator)) (not (is-eq arb assignee)))
+                (some arb)
+                none)
+        ;; If no arbiter provided, return none
+        none))
+
 ;; Public Functions
 
 ;; Create a new task with deadline
@@ -144,11 +155,22 @@
         (asserts! (> deadline block-height) ERR-INVALID-DEADLINE)
         (asserts! (> reward-amount u0) ERR-INVALID-AMOUNT)
         (asserts! (>= penalty-amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (not (is-eq assignee tx-sender)) ERR-INVALID-PRINCIPAL)
+        (asserts! (> (len title) u0) ERR-INVALID-STRING)
+        (asserts! (> (len description) u0) ERR-INVALID-STRING)
+        
+        ;; Validate arbiter using private function
+        (let ((validated-arbiter (validate-arbiter arbiter tx-sender assignee)))
+            
+            ;; Additional validation for arbiter
+            (asserts! (match validated-arbiter
+                        arb (and (not (is-eq arb tx-sender)) (not (is-eq arb assignee)))
+                        true) ERR-INVALID-PRINCIPAL)
         
         ;; Transfer creator deposit (reward + platform fee)
         (try! (stx-transfer? (+ creator-deposit platform-fee) tx-sender (as-contract tx-sender)))
         
-        ;; Create task
+        ;; Create task with all fields
         (map-set tasks task-id {
             creator: tx-sender,
             assignee: assignee,
@@ -160,9 +182,8 @@
             status: "pending",
             completion-time: none,
             evidence-url: none,
-            arbiter: arbiter
+            arbiter: validated-arbiter
         })
-        
         ;; Set initial deposits
         (map-set task-deposits task-id {
             creator-deposit: creator-deposit,
@@ -185,6 +206,7 @@
         (var-set total-fees-collected (+ (var-get total-fees-collected) platform-fee))
         
         (ok task-id)
+        )
     )
 )
 
@@ -223,6 +245,7 @@
         (asserts! (is-eq (get assignee task) tx-sender) ERR-UNAUTHORIZED)
         (asserts! (is-eq (get status task) "pending") ERR-ALREADY-COMPLETED)
         (asserts! (<= block-height (get deadline task)) ERR-DEADLINE-PASSED)
+        (asserts! (> (len evidence-url) u0) ERR-INVALID-STRING)
         
         ;; Update task
         (map-set tasks task-id 
@@ -307,6 +330,7 @@
         (asserts! (is-eq (get status task) "pending") ERR-ALREADY-COMPLETED)
         (asserts! (> new-deadline (get deadline task)) ERR-INVALID-DEADLINE)
         (asserts! (< (get extension-count extensions) u3) ERR-ALREADY-EXISTS) ;; Max 3 extensions
+        (asserts! (> (len reason) u0) ERR-INVALID-STRING)
         
         ;; Store extension request (in production, this would need creator approval)
         ;; For now, auto-approve if within reasonable limits
@@ -362,6 +386,7 @@
         (asserts! (or (is-eq (get creator task) tx-sender) 
                      (is-eq (get assignee task) tx-sender)) ERR-UNAUTHORIZED)
         (asserts! (is-some (get arbiter task)) ERR-UNAUTHORIZED) ;; Need arbiter for disputes
+        (asserts! (> (len reason) u0) ERR-INVALID-STRING)
         
         ;; Create dispute record
         (map-set dispute-resolutions task-id {
@@ -384,6 +409,7 @@
         ;; Validations
         (asserts! (is-eq (some tx-sender) (get arbiter task)) ERR-UNAUTHORIZED)
         (asserts! (get disputed dispute) ERR-NOT-FOUND)
+        (asserts! (> (len resolution) u0) ERR-INVALID-STRING)
         
         ;; Update dispute record
         (map-set dispute-resolutions task-id 
@@ -471,6 +497,7 @@
     (begin
         (asserts! (is-eq tx-sender contract-owner) ERR-OWNER-ONLY)
         (asserts! (<= amount (var-get total-fees-collected)) ERR-INSUFFICIENT-FUNDS)
+        (asserts! (not (is-eq recipient (as-contract tx-sender))) ERR-INVALID-PRINCIPAL)
         (try! (as-contract (stx-transfer? amount tx-sender recipient)))
         (var-set total-fees-collected (- (var-get total-fees-collected) amount))
         (ok true)
